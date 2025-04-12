@@ -14,6 +14,7 @@
  * Memory Module Library libmem.c 
  */
 
+
 #include "string.h"
 #include "mm.h"
 #include "syscall.h"
@@ -88,23 +89,20 @@ int __alloc(struct pcb_t *caller, int vmaid, int rgid, int size, int *alloc_addr
 
   /* TODO get_free_vmrg_area FAILED handle the region management (Fig.6)*/
  else{
-  struct vm_rg_struct *cur_vma = get_vma_by_num(caller->mm, vmaid);
+  struct vm_area_struct *cur_vma = get_vma_by_num(caller->mm, vmaid);
   if(cur_vma == NULL){
     return -1;
   }
   int inc_sz = PAGING_PAGE_ALIGNSZ(size);
-  int inc_limit_ret = sys_memmap(caller, cur_vma->rg_end, inc_sz, SYSMEM_INC_OP);
-  if (inc_limit_ret != 0){
-    return -1;
-  }
+
   cur_vma->vm_end += inc_sz;
   
   struct vm_rg_struct *newrg = malloc(sizeof(struct vm_rg_struct));
   if (newrg == NULL)
     return -1;
 
-  newrg->rg_start = cur_vma->rg_end - inc_sz;
-  newrg->rg_end = cur_vma->rg_end; 
+  newrg->rg_start = cur_vma->vm_end - inc_sz;
+  newrg->rg_end = cur_vma->vm_end; 
 
   enlist_vm_freerg_list(caller->mm, newrg);
   caller->mm->symrgtbl[rgid].rg_start = newrg->rg_start;
@@ -119,14 +117,17 @@ int __alloc(struct pcb_t *caller, int vmaid, int rgid, int size, int *alloc_addr
   /* TODO retrive current vma if needed, current comment out due to compiler redundant warning*/
   /*Attempt to increate limit to get space */
   //struct vm_area_struct *cur_vma = get_vma_by_num(caller->mm, vmaid);
+  struct vm_area_struct *cur_vma = get_vma_by_num(caller->mm, vmaid);
 
 
   //int inc_sz = PAGING_PAGE_ALIGNSZ(size);
   //int inc_limit_ret;
-
+  int inc_sz = PAGING_PAGE_ALIGNSZ(size);
+  int inc_limit_ret;
   /* TODO retrive old_sbrk if needed, current comment out due to compiler redundant warning*/
   //int old_sbrk = cur_vma->sbrk;
-  int old_brk = cur_vma->sbrk;
+  int old_sbrk = cur_vma->sbrk;
+
 
   /* TODO INCREASE THE LIMIT as inovking systemcall 
    * sys_memap with SYSMEM_INC_OP 
@@ -136,15 +137,14 @@ int __alloc(struct pcb_t *caller, int vmaid, int rgid, int size, int *alloc_addr
   //regs.a2 = ...
   //regs.a3 = ...
   struct sc_regs regs;
+  
   regs.a1 = (uint32_t)caller;
-  regs.a2 = (uint32_t)old_brk;
+  regs.a2 = (uint32_t)old_sbrk;
   regs.a3 = (uint32_t)inc_sz;
 
   /* SYSCALL 17 sys_memmap */
-  if(syscall(17, &regs) != 0)
-  {
-    return -1;
-  }
+ if(syscall(caller, 17, &regs) != 0)
+    return -1; // Error in increasing limit
 
 
   /* TODO: commit the limit increment */
@@ -243,6 +243,10 @@ int libfree(struct pcb_t *proc, uint32_t reg_index)
  *@caller: caller
  *
  */
+void pte_set_present(uint32_t *pte) {
+  *pte |= (1U << 31); // Đặt bit 31 lên 1
+}
+
 int pg_getpage(struct mm_struct *mm, int pgn, int *fpn, struct pcb_t *caller)
 {
     uint32_t pte = mm->pgd[pgn];
@@ -263,7 +267,7 @@ int pg_getpage(struct mm_struct *mm, int pgn, int *fpn, struct pcb_t *caller)
         regs.a2 = swpfpn;       // frame trống trong SWAP
         regs.a3 = SYSMEM_SWP_OP;
 
-        if (syscall(17, &regs) != 0)
+        if (syscall(caller, 17, &regs) != 0) // Thêm caller vào syscall
             return -1; // lỗi khi ghi trang nạn nhân ra SWAP
 
         /* 4. Hoán đổi: SWAP --> RAM */
@@ -271,13 +275,13 @@ int pg_getpage(struct mm_struct *mm, int pgn, int *fpn, struct pcb_t *caller)
         regs.a2 = vicpgn;       // frame trống trong RAM (do nạn nhân vừa bị đẩy ra)
         regs.a3 = SYSMEM_SWP_OP;
 
-        if (syscall(17, &regs) != 0)
+        if (syscall(caller, 17, &regs) != 0) // Thêm caller vào syscall
             return -1; // lỗi khi đọc trang mục tiêu vào RAM
 
         /* 5. Cập nhật bảng trang */
-        pte_set_swap(&mm->pgd[vicpgn], swpfpn);   // cập nhật SWAP info cho victim
-        pte_set_fpn(&mm->pgd[pgn], vicpgn);       // cập nhật physical frame cho page pgn
-        pte_set_present(&mm->pgd[pgn]);           // đánh dấu trang đã nạp
+        pte_set_swap(&mm->pgd[vicpgn], swpfpn, caller);   // Thêm caller vào pte_set_swap
+        pte_set_fpn(&mm->pgd[pgn], vicpgn);               // cập nhật physical frame cho page pgn
+        pte_set_present(&mm->pgd[pgn]);                   // đánh dấu trang đã nạp
 
         /* 6. Đưa trang vào hàng FIFO (nếu có dùng) */
         enlist_pgn_node(&caller->mm->fifo_pgn, pgn);
@@ -313,7 +317,7 @@ int pg_getval(struct mm_struct *mm, int addr, BYTE *data, struct pcb_t *caller)
   regs.a2 = (uint32_t)data; // Con trỏ nơi lưu dữ liệu đọc
   regs.a3 = SYSMEM_IO_READ; // Mã thao tác: đọc dữ liệu
 
-  if (syscall(17, &regs) != 0)
+  if (syscall(caller, 17, &regs) != 0)
     return -1; // Lỗi khi thực hiện syscall
 
   return 0; // Thành công
@@ -345,7 +349,7 @@ int pg_setval(struct mm_struct *mm, int addr, BYTE value, struct pcb_t *caller)
   regs.a2 = (uint32_t)&value; // Con trỏ tới dữ liệu cần ghi
   regs.a3 = SYSMEM_IO_WRITE; // Mã thao tác: ghi vào bộ nhớ
 
-  if (syscall(17, &regs) != 0)
+  if (syscall(caller, 17, &regs) != 0)
     return -1; // Lỗi syscall khi ghi dữ liệu
 
   return 0; // Thành công
@@ -529,4 +533,3 @@ int get_free_vmrg_area(struct pcb_t *caller, int vmaid, int size, struct vm_rg_s
 }
 
 //#endif
-s
