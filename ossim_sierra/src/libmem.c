@@ -529,3 +529,4 @@ int get_free_vmrg_area(struct pcb_t *caller, int vmaid, int size, struct vm_rg_s
 }
 
 //#endif
+s
