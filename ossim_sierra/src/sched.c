@@ -1,5 +1,6 @@
 
 #include "queue.h"
+#include <string.h>
 #include "sched.h"
 #include <pthread.h>
 
@@ -8,7 +9,7 @@
 static struct queue_t ready_queue;
 static struct queue_t run_queue;
 static pthread_mutex_t queue_lock;
-
+static int slots_used[MAX_PRIO] = {0};
 static struct queue_t running_list;
 #ifdef MLQ_SCHED
 static struct queue_t mlq_ready_queue[MAX_PRIO];
@@ -55,54 +56,58 @@ struct pcb_t *get_mlq_proc(void)
 	/*TODO: get a process from PRIORITY [ready_queue].
 	 * Remember to use lock to protect the queue.
 	 * */
-    static int curr_prio = 0;
-    static int curr_slot = MAX_PRIO;
-	pthread_mutex_lock(&queue_lock);
 
-    if (queue_empty() != -1) {
-        pthread_mutex_unlock(&queue_lock);
-        return NULL;
-    }
+	// static uint32_t curr_prio = 0;
+	// static int curr_slot = MAX_PRIO;
+	// static int current_queue = 0;
+	// pthread_mutex_lock(&queue_lock);
 
-    // get the process with greatest priority
-    for (int i = 0; i < curr_prio; i++) {
-        if (!empty(&mlq_ready_queue[i])) {
-            curr_prio = i;
-            curr_slot = MAX_PRIO - i - 1;
-            proc = dequeue(&mlq_ready_queue[i]);
+	// for (int i = 0; i < MAX_PRIO; i++) {
+	// 	uint32_t prio = (curr_prio + i) % MAX_PRIO;
 
-            pthread_mutex_unlock(&queue_lock);
-            return proc;
+	// 	if (!empty(&mlq_ready_queue[prio])) {
+	// 		proc = dequeue(&mlq_ready_queue[prio]);
+
+	// 		curr_slot--;
+
+	// 		if (curr_slot <= 0) {
+	// 			curr_prio = (prio + i) % MAX_PRIO;
+	// 			curr_slot = i;
+	// 		}
+
+	// 		break;
+	// 	}
+	// }
+	// int empty_queue = 0;
+	int found_proc = 0;
+    pthread_mutex_lock(&queue_lock);
+    for (int prio = 0; prio < MAX_PRIO; prio++) {
+        if (prio >= 0 && prio < MAX_PRIO) {
+             if (!empty(&mlq_ready_queue[prio]) && slots_used[prio] < slot[prio]) {
+                proc = dequeue(&mlq_ready_queue[prio]);
+                slots_used[prio]++; 
+                found_proc = 1;
+                break; 
+            }
         }
     }
-
-    // if there is a process with the same priority and curr_slot > 0
-    if (!empty(&mlq_ready_queue[curr_prio]) && curr_slot > 0) {
-        proc = dequeue(&mlq_ready_queue[curr_prio]);
-        curr_slot--;
-        pthread_mutex_unlock(&queue_lock);
-        return proc;
-    }
-
-    // slot went out, check for the next priority
-    for (int i = curr_prio + 1; i < MAX_PRIO; i++) {
-        if (!empty(&mlq_ready_queue[i])) {
-            curr_prio = i;
-            curr_slot = MAX_PRIO - i - 1;
-            proc = dequeue(&mlq_ready_queue[i]);
-
-            pthread_mutex_unlock(&queue_lock);
-            return proc;
+    if (!found_proc) {
+        for (int i = 0; i < MAX_PRIO; i++) {
+            slots_used[i] = 0;
+        }
+        for (int prio = 0; prio < MAX_PRIO; prio++) {
+             if (prio >= 0 && prio < MAX_PRIO) { 
+                if (!empty(&mlq_ready_queue[prio])) {
+                    proc = dequeue(&mlq_ready_queue[prio]);
+                    slots_used[prio]++; 
+                    found_proc = 1; 
+                    break; 
+                }
+            }
         }
     }
-
-    // last resort, forced to get the process with the current priority
-    if (!empty(&mlq_ready_queue[curr_prio])) {
-        proc = dequeue(&mlq_ready_queue[curr_prio]);
-    }
-
-	pthread_mutex_unlock(&queue_lock);
-	return proc;
+    pthread_mutex_unlock(&queue_lock);
+    return proc;
 }
 
 void put_mlq_proc(struct pcb_t *proc)
@@ -132,8 +137,9 @@ void put_proc(struct pcb_t *proc)
 
 	/* TODO: put running proc to running_list */
 	pthread_mutex_lock(&queue_lock);
-	enqueue(proc->running_list, proc);
+	enqueue(&ready_queue, proc);
 	pthread_mutex_unlock(&queue_lock);
+
 	return put_mlq_proc(proc);
 }
 
@@ -145,8 +151,9 @@ void add_proc(struct pcb_t *proc)
 
 	/* TODO: put running proc to running_list */
 	pthread_mutex_lock(&queue_lock);
-	enqueue(proc->running_list, proc);
+	enqueue(&ready_queue, proc);
 	pthread_mutex_unlock(&queue_lock);
+
 	return add_mlq_proc(proc);
 }
 #else
@@ -157,42 +164,37 @@ struct pcb_t *get_proc(void)
 	 * Remember to use lock to protect the queue.
 	 * */
 	pthread_mutex_lock(&queue_lock);
-	if (empty(&ready_queue)) {
-		pthread_mutex_unlock(&queue_lock);
-		return NULL;
+	if (!empty(&ready_queue))
+	{
+		proc = dequeue(&ready_queue);
 	}
-	proc = dequeue(&ready_queue);
 	pthread_mutex_unlock(&queue_lock);
 	return proc;
 }
 
 void put_proc(struct pcb_t *proc)
 {
-	proc->ready_queue = &ready_queue;
-	proc->running_list = &running_list;
+	void put_proc(struct pcb_t * proc)
+	{
+		proc->ready_queue = &ready_queue;
+		proc->running_list = &running_list;
 
-	/* TODO: put running proc to running_list */
-	// pthread_mutex_lock(&queue_lock);
-	// enqueue(proc->running_list, proc);
-	// pthread_mutex_unlock(&queue_lock);
+		/* TODO: put running proc to running_list */
 
-	pthread_mutex_lock(&queue_lock);
-	enqueue(proc->run_queue, proc);
-	pthread_mutex_unlock(&queue_lock);
-}
+		pthread_mutex_lock(&queue_lock);
+		enqueue(&run_queue, proc);
+		pthread_mutex_unlock(&queue_lock);
+	}
 
-void add_proc(struct pcb_t *proc)
-{
-	proc->ready_queue = &ready_queue;
-	proc->running_list = &running_list;
+	void add_proc(struct pcb_t * proc)
+	{
+		proc->ready_queue = &ready_queue;
+		proc->running_list = &running_list;
 
-	/* TODO: put running proc to running_list */
-	// pthread_mutex_lock(&queue_lock);
-	// enqueue(proc->running_list, proc);
-	// pthread_mutex_unlock(&queue_lock);
+		/* TODO: put running proc to running_list */
 
-	pthread_mutex_lock(&queue_lock);
-	enqueue(proc->ready_queue, proc);
-	pthread_mutex_unlock(&queue_lock);
-}
+		pthread_mutex_lock(&queue_lock);
+		enqueue(&ready_queue, proc);
+		pthread_mutex_unlock(&queue_lock);
+	}
 #endif
