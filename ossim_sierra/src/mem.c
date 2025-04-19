@@ -45,6 +45,7 @@ static struct trans_table_t * get_trans_table(
 	
 	/* DO NOTHING HERE. This mem is obsoleted */
 
+	
 	int i;
 	for (i = 0; i < page_table->size; i++) {
 		// Enter your code here
@@ -54,6 +55,7 @@ static struct trans_table_t * get_trans_table(
 		
 	}
 	return NULL;
+
 
 }
 
